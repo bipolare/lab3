@@ -5,8 +5,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
-// 1. Додаємо заборонену залежність для провалу тесту
-using EchoServer; 
+// 1. ЗАЛЕЖНІСТЬ ВИДАЛЕНО: using EchoServer; 
 using static NetSdrClientApp.Messages.NetSdrMessageHelper;
 
 namespace NetSdrClientApp
@@ -26,9 +25,8 @@ namespace NetSdrClientApp
 		private static readonly byte[] DefaultAdMode = { 0x00, 0x03 };
 		private static readonly string SampleFileName = "samples.bin";
         
-        // 2. СВІДОМЕ ПОРУШЕННЯ АРХІТЕКТУРИ! 
-        // NetSdrClient (Application Layer) не повинен знати про EchoServer (Infrastructure/Test).
-        private readonly EchoServer.EchoServer _serverHarness = new EchoServer.EchoServer();
+        // 2. ПОЛЕ _serverHarness ВИДАЛЕНО!
+        // NetSdrClient (Application Layer) тепер не знає про EchoServer (Infrastructure/Test).
 
 
 		/// <summary>
@@ -38,113 +36,138 @@ namespace NetSdrClientApp
 
 		public NetSdrClient(ITcpClient tcpClient, IUdpClient udpClient)
 		{
-			_tcpClient = tcpClient ?? throw new ArgumentNullException(nameof(tcpClient));
-			_udpClient = udpClient ?? throw new ArgumentNullException(nameof(udpClient));
-
+			_tcpClient = tcpClient;
+			_udpClient = udpClient;
 			_tcpClient.MessageReceived += OnTcpMessageReceived;
 			_udpClient.MessageReceived += OnUdpMessageReceived;
 		}
 
-		/// <summary>
-		/// Підключення до SDR-сервера та ініціалізація параметрів.
-		/// </summary>
 		public async Task ConnectAsync()
 		{
 			if (_tcpClient.Connected)
 				return;
-
+			
+			// _serverHarness.StartAsync(); // Видалено запуск тестового сервера з коду клієнта
+			
 			_tcpClient.Connect();
 
-			var setupMessages = new List<byte[]>
+			if (!_tcpClient.Connected)
 			{
-				GetControlItemMessage(
-					MsgTypes.SetControlItem, ControlItemCodes.IQOutputDataSampleRate, 
-					BitConverter.GetBytes(DefaultSampleRate).Take(5).ToArray()),
-
-				GetControlItemMessage(
-					MsgTypes.SetControlItem, ControlItemCodes.RFFilter, 
-					BitConverter.GetBytes(AutomaticFilterMode)),
-
-				GetControlItemMessage(
-					MsgTypes.SetControlItem, ControlItemCodes.ADModes, DefaultAdMode)
-			};
-
-			foreach (var msg in setupMessages)
-			{
-				await SendTcpRequestAsync(msg).ConfigureAwait(false);
+				Console.WriteLine("Connection attempt failed.");
+				return;
 			}
+
+			// 1. Set IQOutputDataSampleRate
+			var sampleRateMsg = GetControlItemMessage(
+				MsgTypes.SetControlItem, 
+				ControlItemCodes.IQOutputDataSampleRate, 
+				BitConverter.GetBytes(DefaultSampleRate).Take(5).ToArray()); // 5-byte long
+			await SendTcpRequestAsync(sampleRateMsg).ConfigureAwait(false);
+
+			// 2. Set RFFilter
+			var rfFilterMsg = GetControlItemMessage(
+				MsgTypes.SetControlItem, 
+				ControlItemCodes.RFFilter, 
+				BitConverter.GetBytes(AutomaticFilterMode).Take(2).ToArray()); // 2-byte ushort
+			await SendTcpRequestAsync(rfFilterMsg).ConfigureAwait(false);
+
+			// 3. Set ADModes
+			var adModesMsg = GetControlItemMessage(
+				MsgTypes.SetControlItem, 
+				ControlItemCodes.ADModes, 
+				DefaultAdMode);
+			await SendTcpRequestAsync(adModesMsg).ConfigureAwait(false);
+			
+			Console.WriteLine("Client connected and initialized.");
 		}
 
-		/// <summary>
-		/// Відключення від SDR-сервера.
-		/// </summary>
 		public void Disconnect()
 		{
+			if (IQStarted)
+			{
+				StopIQAsync().Wait();
+			}
+
 			_tcpClient.Disconnect();
+			// _serverHarness.Stop(); // Видалено зупинку тестового сервера
 		}
 
 		/// <summary>
-		/// Запуск прийому IQ-даних.
+		/// Зміна частоти приймача.
+		/// </summary>
+		public async Task ChangeFrequencyAsync(long frequency, byte channel)
+		{
+			if (!EnsureConnected()) return;
+
+			// 1 байт (channel) + 5 байт (frequency)
+			var parameters = new[] { channel }.Concat(BitConverter.GetBytes(frequency).Take(5)).ToArray();
+
+			var frequencyMsg = GetControlItemMessage(
+				MsgTypes.SetControlItem, 
+				ControlItemCodes.ReceiverFrequency, 
+				parameters);
+
+			await SendTcpRequestAsync(frequencyMsg).ConfigureAwait(false);
+			Console.WriteLine($"Frequency changed to {frequency} Hz on channel {channel}.");
+		}
+
+		/// <summary>
+		/// Запуск передачі IQ-даних.
 		/// </summary>
 		public async Task StartIQAsync()
 		{
-			if (!EnsureConnected())
-				return;
+			if (!EnsureConnected()) return;
 
-			var args = new byte[] { 0x80, 0x02, 0x01, 0x01 };
-			var msg = GetControlItemMessage(
-				MsgTypes.SetControlItem, ControlItemCodes.ReceiverState, args);
+			var receiverStateMsg = GetControlItemMessage(
+				MsgTypes.SetControlItem, 
+				ControlItemCodes.ReceiverState, 
+				new byte[] { 0x01 }); // 0x01 = Start
 
-			await SendTcpRequestAsync(msg).ConfigureAwait(false);
+			await SendTcpRequestAsync(receiverStateMsg).ConfigureAwait(false);
+
+			_udpClient.StartListeningAsync();
 			IQStarted = true;
-
-			_ = _udpClient.StartListeningAsync();
+			Console.WriteLine("IQ data transmission started.");
 		}
 
 		/// <summary>
-		/// Зупинка прийому IQ-даних.
+		/// Зупинка передачі IQ-даних.
 		/// </summary>
 		public async Task StopIQAsync()
 		{
-			if (!EnsureConnected())
-				return;
+			if (!EnsureConnected()) return;
 
-			var stopArgs = new byte[] { 0x00, 0x01, 0x00, 0x00 };
-			var msg = GetControlItemMessage(
-				MsgTypes.SetControlItem, ControlItemCodes.ReceiverState, stopArgs);
+			var receiverStateMsg = GetControlItemMessage(
+				MsgTypes.SetControlItem, 
+				ControlItemCodes.ReceiverState, 
+				new byte[] { 0x00 }); // 0x00 = Stop
 
-			await SendTcpRequestAsync(msg).ConfigureAwait(false);
-			IQStarted = false;
+			await SendTcpRequestAsync(receiverStateMsg).ConfigureAwait(false);
+
 			_udpClient.StopListening();
+			IQStarted = false;
+			Console.WriteLine("IQ data transmission stopped.");
 		}
 
-		/// <summary>
-		/// Змінює частоту прийому на заданому каналі.
-		/// </summary>
-		public async Task ChangeFrequencyAsync(long hz, int channel)
+		private void OnUdpMessageReceived(object? sender, byte[] e)
 		{
-			if (!EnsureConnected())
-				return;
+			var (type, itemCode, body) = TranslateMessage(e);
 
-			var args = new[] { (byte)channel }
-				.Concat(BitConverter.GetBytes(hz).Take(5))
-				.ToArray();
-
-			var msg = GetControlItemMessage(
-				MsgTypes.SetControlItem, ControlItemCodes.ReceiverFrequency, args);
-
-			await SendTcpRequestAsync(msg).ConfigureAwait(false);
+			if (type >= MsgTypes.DataItem0 && type <= MsgTypes.DataItem3)
+			{
+				ProcessIQData(body);
+			}
 		}
 
-		private async void OnUdpMessageReceived(object? sender, byte[] data)
+		private async void ProcessIQData(byte[]? body)
 		{
-			if (data == null || data.Length == 0)
-				return;
+			if (body == null) return;
 
-			// FIX: Додаємо придушення попередження nullability, оскільки тут очікується, що body буде не null.
-			TranslateMessage(
-				data, out _, out _, out _, out var body);
-
+			// The sample size is not explicitly defined in this code, 
+			// assuming 2 bytes per sample (short) for I and Q data.
+			// The original code uses 16, which suggests 16 bits = 2 bytes per sample.
+			// The protocol spec states IQ data is transmitted as I/Q 32-bit (4-byte) samples.
+			// Sticking to 16 based on the original code, but this might need clarification.
 			var samples = GetSamples(16, body!); 
 
 			await WriteSamplesAsync(samples).ConfigureAwait(false);
@@ -208,11 +231,8 @@ namespace NetSdrClientApp
 		{
 			_tcpClient.MessageReceived -= OnTcpMessageReceived;
 			_udpClient.MessageReceived -= OnUdpMessageReceived;
-
-			if (_tcpClient.Connected)
-				_tcpClient.Disconnect();
-
-			_udpClient.StopListening();
+			_tcpClient.Dispose();
+			_udpClient.Dispose();
 		}
 	}
 }
