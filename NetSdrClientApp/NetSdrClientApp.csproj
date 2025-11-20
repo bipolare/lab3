@@ -9,6 +9,7 @@
   <ItemGroup>
   	<PackageReference Include="Newtonsoft.Json" Version="13.0.0" />
   	<PackageReference Include="SharpZipLib" Version="1.3.2" />
+    <ProjectReference Include="..\EchoTcpServer\EchoServer.csproj" />
   </ItemGroup>
 
 </Project>

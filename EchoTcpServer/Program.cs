@@ -1,24 +1,53 @@
-﻿using System;
+// Вміст Program.cs (EchoServer)
+
+using System;
+using System.IO;
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Linq; 
+
+// --- ТОЧКА ВХОДУ ДЛЯ КОНСОЛЬНОГО ЗАСТОСУНКУ ---
+try
+{
+    Console.WriteLine("Starting EchoServer (TCP) and UdpTimedSender...");
+    
+    // Кваліфікуємо типи, щоб уникнути конфлікту імен 'EchoServer'
+    using var server = new EchoServer.EchoServer(50000); 
+    using var udpSender = new EchoServer.UdpTimedSender("127.0.0.1", 60000); 
+    
+    udpSender.StartSending(100);
+    
+    await server.StartAsync(); 
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"Критична помилка: {ex.Message}");
+}
+finally
+{
+    Console.WriteLine("EchoServer stopped.");
+}
+// -------------------------------------------------------------------
 
 namespace EchoServer
 {
-    public class EchoServer
+    // Повний патерн Dispose (для Sonar S3881)
+    public class EchoServer : IDisposable
     {
         private readonly int _port;
-        private TcpListener _listener;
-        private CancellationTokenSource _cancellationTokenSource;
+        private TcpListener? _listener; 
+        private readonly CancellationTokenSource _cancellationTokenSource; 
+        private bool _disposed = false;
 
-        //constuctor
         public EchoServer(int port)
         {
             _port = port;
             _cancellationTokenSource = new CancellationTokenSource();
         }
+        
+        // ... (StartAsync та Stop) ...
 
         public async Task StartAsync()
         {
@@ -33,90 +62,84 @@ namespace EchoServer
                     TcpClient client = await _listener.AcceptTcpClientAsync();
                     Console.WriteLine("Client connected.");
 
-                    _ = Task.Run(() => HandleClientAsync(client, _cancellationTokenSource.Token));
+                    _ = Task.Run(() => HandleClientAsync(client.GetStream(), _cancellationTokenSource.Token));
                 }
                 catch (ObjectDisposedException)
                 {
-                    // Listener has been closed
                     break;
                 }
             }
-
             Console.WriteLine("Server shutdown.");
-        }
-
-        private async Task HandleClientAsync(TcpClient client, CancellationToken token)
-        {
-            using (NetworkStream stream = client.GetStream())
-            {
-                try
-                {
-                    byte[] buffer = new byte[8192];
-                    int bytesRead;
-
-                    while (!token.IsCancellationRequested && (bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, token)) > 0)
-                    {
-                        // Echo back the received message
-                        await stream.WriteAsync(buffer, 0, bytesRead, token);
-                        Console.WriteLine($"Echoed {bytesRead} bytes to the client.");
-                    }
-                }
-                catch (Exception ex) when (!(ex is OperationCanceledException))
-                {
-                    Console.WriteLine($"Error: {ex.Message}");
-                }
-                finally
-                {
-                    client.Close();
-                    Console.WriteLine("Client disconnected.");
-                }
-            }
         }
 
         public void Stop()
         {
             _cancellationTokenSource.Cancel();
-            _listener.Stop();
-            _cancellationTokenSource.Dispose();
-            Console.WriteLine("Server stopped.");
+            _listener?.Stop(); 
         }
 
-        public static async Task Main(string[] args)
+        // РЕФАКТОРИНГ: HandleClientAsync приймає Stream для тестування
+        public async Task HandleClientAsync(Stream stream, CancellationToken token)
         {
-            EchoServer server = new EchoServer(5000);
-
-            // Start the server in a separate task
-            _ = Task.Run(() => server.StartAsync());
-
-            string host = "127.0.0.1"; // Target IP
-            int port = 60000;          // Target Port
-            int intervalMilliseconds = 5000; // Send every 3 seconds
-
-            using (var sender = new UdpTimedSender(host, port))
+            using (stream) 
             {
-                Console.WriteLine("Press any key to stop sending...");
-                sender.StartSending(intervalMilliseconds);
+                byte[] buffer = new byte[1024];
+                int bytesRead;
 
-                Console.WriteLine("Press 'q' to quit...");
-                while (Console.ReadKey(intercept: true).Key != ConsoleKey.Q)
+                try
                 {
-                    // Just wait until 'q' is pressed
+                    while (!token.IsCancellationRequested && (bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, token)) != 0)
+                    {
+                        Console.WriteLine($"Received: {bytesRead} bytes.");
+                        await stream.WriteAsync(buffer, 0, bytesRead, token); 
+                        Console.WriteLine($"Sent: {bytesRead} bytes.");
+                    }
                 }
+                catch (IOException ex) when (ex.InnerException is SocketException se && se.SocketErrorCode == SocketError.ConnectionReset)
+                {
+                    Console.WriteLine("Client disconnected forcefully.");
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error handling client: {ex.Message}");
+                }
+            }
+            Console.WriteLine("Client disconnected.");
+        }
+        
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
 
-                sender.StopSending();
-                server.Stop();
-                Console.WriteLine("Sender stopped.");
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!_disposed)
+            {
+                if (disposing)
+                {
+                    Stop(); 
+                    _cancellationTokenSource.Dispose();
+                }
+                _disposed = true;
             }
         }
     }
-
 
     public class UdpTimedSender : IDisposable
     {
         private readonly string _host;
         private readonly int _port;
         private readonly UdpClient _udpClient;
-        private Timer _timer;
+        private Timer? _timer; 
+        private bool _disposed = false;
+        
+        // РЕФАКТОРИНГ: Зроблено статичним для потокобезпечного Random (для Sonar S2245)
+        private static readonly Random Rnd = new Random(); 
 
         public UdpTimedSender(string host, int port)
         {
@@ -124,7 +147,8 @@ namespace EchoServer
             _port = port;
             _udpClient = new UdpClient();
         }
-
+        
+        // ... (StartSending) ...
         public void StartSending(int intervalMilliseconds)
         {
             if (_timer != null)
@@ -135,14 +159,17 @@ namespace EchoServer
 
         ushort i = 0;
 
-        private void SendMessageCallback(object state)
+        private void SendMessageCallback(object? state)
         {
             try
             {
-                //dummy data
-                Random rnd = new Random();
                 byte[] samples = new byte[1024];
-                rnd.NextBytes(samples);
+                
+                // Використовуємо статичний Random з блокуванням
+                lock (Rnd) 
+                {
+                    Rnd.NextBytes(samples);
+                }
                 i++;
 
                 byte[] msg = (new byte[] { 0x04, 0x84 }).Concat(BitConverter.GetBytes(i)).Concat(samples).ToArray();
@@ -157,6 +184,7 @@ namespace EchoServer
             }
         }
 
+        // ... (StopSending) ...
         public void StopSending()
         {
             _timer?.Dispose();
@@ -165,8 +193,21 @@ namespace EchoServer
 
         public void Dispose()
         {
-            StopSending();
-            _udpClient.Dispose();
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!_disposed)
+            {
+                if (disposing)
+                {
+                    StopSending();
+                    _udpClient.Dispose();
+                }
+                _disposed = true;
+            }
         }
     }
 }
