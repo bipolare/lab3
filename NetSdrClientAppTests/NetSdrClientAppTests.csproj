@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
@@ -36,6 +36,7 @@
   <ItemGroup>
     <!-- Глобальне використання NUnit.Framework для зручності -->
     <Using Include="NUnit.Framework" />
+    <ProjectReference Include="..\EchoTcpServer\EchoServer.csproj" />
   </ItemGroup>
 
 </Project>

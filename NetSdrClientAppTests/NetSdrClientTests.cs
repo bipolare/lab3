@@ -1,19 +1,19 @@
-using NetSdrClientApp;
 using NetSdrClientApp.Messages;
 using NetSdrClientApp.Networking;
 using Moq;
 using NUnit.Framework; 
 using System;
 using System.Threading.Tasks;
+using NetSdrClientApp; // Використовуємо явний простір імен
 
 namespace NetSdrClientApp.Tests
 {
     [TestFixture] 
     public class NetSdrClientTests
     {
-        private Mock<ITcpClient> _tcpClientMock;
-        private Mock<IUdpClient> _udpClientMock;
-        private NetSdrClient _client = null!; // Придушуємо попередження, оскільки ініціалізація відбувається в SetUp
+        private Mock<ITcpClient> _tcpClientMock = null!;
+        private Mock<IUdpClient> _udpClientMock = null!;
+        private NetSdrClient _client = null!;
 
         [SetUp] 
         public void SetUp()
@@ -24,10 +24,12 @@ namespace NetSdrClientApp.Tests
             // Налаштування поведінки за замовчуванням
             _tcpClientMock.SetupGet(c => c.Connected).Returns(true);
             
+            // Виправлення: Уникнення помилки CS0118.
+            // При створенні об'єкту NetSdrClient ми передаємо тільки його залежності,
+            // без спроб використовувати EchoServer чи інші зайві класи тут.
             _client = new NetSdrClient(_tcpClientMock.Object, _udpClientMock.Object);
         }
         
-        // FIX for NUnit1032: Додаємо [TearDown] для коректної утилізації _client
         [TearDown]
         public void TearDown()
         {
@@ -39,7 +41,6 @@ namespace NetSdrClientApp.Tests
         [Test]
         public void Constructor_ThrowsArgumentNullException_WhenTcpClientIsNull()
         {
-            // Використовуємо null! для придушення попередження
             Assert.Throws<ArgumentNullException>(() => 
                 new NetSdrClient(null!, _udpClientMock.Object));
         }
@@ -47,7 +48,6 @@ namespace NetSdrClientApp.Tests
         [Test]
         public void Constructor_ThrowsArgumentNullException_WhenUdpClientIsNull()
         {
-            // Використовуємо null!
             Assert.Throws<ArgumentNullException>(() => 
                 new NetSdrClient(_tcpClientMock.Object, null!));
         }
@@ -111,4 +111,4 @@ namespace NetSdrClientApp.Tests
             _udpClientMock.Verify(c => c.StopListening(), Times.Once);
         }
     }
-}
+} 
