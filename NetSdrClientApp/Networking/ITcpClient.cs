@@ -1,13 +1,10 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
+using System; // Required for IDisposable
 using System.Threading.Tasks;
-using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace NetSdrClientApp.Networking
 {
-    public interface ITcpClient
+    // Inherit from IDisposable to enable the .Dispose() method and 'using' statements
+    public interface ITcpClient : IDisposable
     {
         void Connect();
         void Disconnect();
